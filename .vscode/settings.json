@@ -1,0 +1,16 @@
+{
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true
+    },
+    "hide-files.files": [],
+    "Lua.diagnostics.globals": [
+        "MAX_RAID_MEMBERS",
+        "MAX_PARTY_MEMBERS",
+        "LE_PARTY_CATEGORY_INSTANCE"
+    ]
+}

@@ -2,6 +2,7 @@ local major = "LibHealComm-4.0"
 local minor = 110
 assert(LibStub, format("%s requires LibStub.", major))
 
+---@class LibHealComm-4.0
 local HealComm = LibStub:NewLibrary(major, minor)
 if( not HealComm ) then return end
 
@@ -125,17 +126,29 @@ HealComm.ALL_HEALS, HealComm.OVERTIME_HEALS, HealComm.OVERTIME_AND_BOMB_HEALS, H
 local playerGUID, playerName, playerLevel
 local playerHealModifier = 1
 
+---@alias dhData { interval: number, ticks: number, coeff: number, levels?: number[], averages?: number[]|number[][], bomb?: number[] } 
+---@alias SpellData table<string, dhData>
+
+---@alias hotData { interval: number, ticks: number, coeff: number, levels: number[], averages: number[], bomb?: number[], dhCoeff?: number}
+---@alias HotData table<string, hotData>
+
 HealComm.callbacks = HealComm.callbacks or LibStub:GetLibrary("CallbackHandler-1.0"):New(HealComm)
 HealComm.activeHots = HealComm.activeHots or {}
+---@type table<string, string>
 HealComm.activePets = HealComm.activePets or {}
 HealComm.equippedSetCache = HealComm.equippedSetCache or {}
 HealComm.guidToGroup = HealComm.guidToGroup or {}
 HealComm.guidToUnit = HealComm.guidToUnit or {}
-HealComm.hotData = HealComm.hotData or {}
 HealComm.itemSetsData = HealComm.itemSetsData or {}
 HealComm.pendingHeals = HealComm.pendingHeals or {}
 HealComm.pendingHots = HealComm.pendingHots or {}
+
+--- Map of a spellName to it's gathered **direct healing** data. Contains spell data for players current class.
+---@type SpellData
 HealComm.spellData = HealComm.spellData or {}
+--- Like the spellData table, but for the **healing over time** data of the a spell.
+---@type HotData
+HealComm.hotData = HealComm.hotData or {}
 HealComm.talentData = HealComm.talentData or {}
 HealComm.tempPlayerList = HealComm.tempPlayerList or {}
 HealComm.glyphCache = HealComm.glyphCache or {}
@@ -160,7 +173,7 @@ if( not HealComm.compressGUID  ) then
 			if strsub(guid,1,6) ~= "Player" then
 				for unit,pguid in pairs(activePets) do
 					if pguid == guid and UnitExists(unit) then
-						str = "p-" .. strmatch(UnitGUID(unit), "^%w*-([-%w]*)$")
+						str = "p-" .. strmatch(UnitGUID(unit) --[[@as string]], "^%w*-([-%w]*)$")
 					end
 				end
 				if not str then
@@ -210,6 +223,7 @@ end
 
 -- Validation for passed arguments
 if( not HealComm.tooltip ) then
+	---@class HealCommTooltip : GameTooltip
 	local tooltip = CreateFrame("GameTooltip")
 	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
 	tooltip.TextLeft1 = tooltip:CreateFontString()
@@ -219,7 +233,7 @@ if( not HealComm.tooltip ) then
 	HealComm.tooltip = tooltip
 end
 
--- Record management, because this is getting more complicted to deal with
+--- Record management, because this is getting more complicted to deal with
 local function updateRecord(pending, guid, amount, stack, endTime, ticksLeft)
 	if( pending[guid] ) then
 		local id = pending[guid]
@@ -359,7 +373,7 @@ HealComm.removeRecord = removeRecord
 HealComm.getRecord = getRecord
 HealComm.updateRecord = updateRecord
 
--- Removes all pending heals, if it's a group that is causing the clear then we won't remove the players heals on themselves
+--- Removes all pending heals, if it's a group that is causing the clear then we won't remove the players heals on themselves
 local function clearPendingHeals()
 	for _, tbl in pairs({pendingHeals, pendingHots}) do
 		for casterGUID, spells in pairs(tbl) do
@@ -558,9 +572,13 @@ function HealComm:GetCasterHealAmount(guid, bitFlag, time)
 end
 
 function HealComm:GetHealAmountEx(dstGUID, dstBitFlag, dstTime, srcGUID, srcBitFlag, srcTime)
+	---@type number?
 	local dstAmount1 = 0
+	---@type number?
 	local dstAmount2 = 0
+	---@type number?
 	local srcAmount1 = 0
+	---@type number?
 	local srcAmount2 = 0
 
 	local currTime = GetTime()
@@ -742,7 +760,13 @@ end
 -- Heal modifiers are applied after all of that
 -- Crit modifiers are applied after
 -- Any other modifiers such as Mortal Strike or Avenging Wrath are applied after everything else
-
+---Estimate the actual healing amount of a spell after taking into account player stats and modifiers
+---@param level number Casting player's level
+---@param amount number Base healing amount of the spell (usually tooltip value)
+---@param spellPower number Caster's current spell power (also called +healing)
+---@param spModifier number Any percent power gains to the spell (usually from talents or auras). Range `[0,1]`
+---@param healModifier number Any percent healing gains that apply to the spell.
+---@return number generalAmount The estimated healing amount of the spell.
 local function calculateGeneralAmount(level, amount, spellPower, spModifier, healModifier)
 	local penalty = level > 20 and 1 or (1 - ((20 - level) * 0.0375))
 	if isWrath then
@@ -805,17 +829,30 @@ end
 
 local CalculateHealing, GetHealTargets, AuraHandler, CalculateHotHealing, ResetChargeData, LoadClassData
 
+--- Caculate the base healing value of a spell and rank. Base healing is usually the number in the tooltip.
+---@param spellData SpellData | HotData Table of all healing spell data
+---@param spellName string Name of the spell (HoT or DH)
+---@param spellID number ID of the spell
+---@param spellRank any Rank of the spell
+---@return number
 local function getBaseHealAmount(spellData, spellName, spellID, spellRank)
+	-- local data = spellData[spellName] 
 	if spellID == 37563 then
+		---@diagnostic disable-next-line: cast-local-type
 		spellData = spellData["37563"]
+		-- data = spellData["37563"]
 	else
+		---@type SpellData | HotData
+		---@diagnostic disable-next-line: assign-type-mismatch
 		spellData = spellData[spellName]
 	end
+	-- then use data instead
 	local average = spellData.averages[spellRank]
 	if type(average) == "number" then
 		return average
 	end
 	local requiresLevel = spellData.levels[spellRank]
+	---@diagnostic disable-next-line: return-type-mismatch, need-check-nil
 	return average[min(playerLevel - requiresLevel + 1, #average)]
 end
 
@@ -951,7 +988,7 @@ if( playerClass == "DRUID" ) then
 				local playerGroup = guidToGroup[playerGUID]
 
 				for groupGUID, id in pairs(guidToGroup) do
-					if( id == playerGroup and playerGUID ~= groupGUID and not UnitHasVehicleUI(guidToUnit[groupID]) and IsSpellInRange(MarkoftheWild, guidToUnit[groupGUID]) == 1 ) then
+					if( id == playerGroup and playerGUID ~= groupGUID and not UnitHasVehicleUI(guidToUnit[groupGUID]) and IsSpellInRange(MarkoftheWild, guidToUnit[groupGUID]) == 1 ) then
 						targets = targets .. "," .. compressGUID[groupGUID]
 					end
 				end
@@ -2722,7 +2759,7 @@ function HealComm:COMBAT_LOG_EVENT_UNFILTERED(...)
 			-- Single target so we can just send it off now thankfully
 			local bitType, amount, totalTicks, tickInterval, bombAmount, hasVariableTicks = CalculateHotHealing(destGUID, spellID)
 			if( bitType ) then
-				local targets = GetHealTargets(type, destGUID, spellID)
+				local targets = GetHealTargets(type, destGUID, spellID) -- should be bitType?
 				if targets then
 					parseHotHeal(sourceGUID, false, spellID, amount, totalTicks, tickInterval, strsplit(",", targets))
 
