@@ -855,34 +855,37 @@ do
 	end
 end
 
--- Note because I always forget on the order:
--- Talents that effective the coeffiency of spell power to healing are first and are tacked directly onto the coeffiency (Empowered Rejuvenation)
--- Penalty modifiers (downranking/spell level too low) are applied directly to the spell power
--- Spell power modifiers are then applied to the spell power
--- Heal modifiers are applied after all of that
--- Crit modifiers are applied after
--- Any other modifiers such as Mortal Strike or Avenging Wrath are applied after everything else
----Estimate the actual healing amount of a spell after taking into account player stats and modifiers
----@param level number Casting player's level
----@param amount number Base healing amount of the spell (usually tooltip value)
----@param spellPower number Caster's current spell power (also called +healing)
+--- Estimate the actual healing amount of a spell after taking into account player stats and modifiers.
+--- #### Note because I always forget on the order:
+--- * Talents that effective the coeffiency of spell power to healing are first and are tacked directly onto the coeffiency (Empowered Rejuvenation).
+--- * Penalty modifiers (downranking/spell level too low) are applied directly to the spell power.
+--- * Spell power modifiers are then applied to the spell power.
+--- * Heal modifiers are applied after all of that.
+--- * Crit modifiers are applied after.
+--- * Any other modifiers such as Mortal Strike or Avenging Wrath are applied after everything else.
+---@param spellLevel number Casted spell's level (level learnable @)
+---@param baseAmount number Base damage or healing amount of the spell (usually tooltip value).
+---@param spellPower number Caster's current spell power, or +healing for healing spells.
 ---@param spModifier number Any percent power gains to the spell (usually from talents or auras). Range `[0,1]`
 ---@param healModifier number Any percent healing gains that apply to the spell.
 ---@return number generalAmount The estimated healing amount of the spell.
-local function calculateGeneralAmount(level, amount, spellPower, spModifier, healModifier)
-	--SOD runes have no spell level and are treated as playerLevel
-	level = level or isSoD and playerLevel
-	local penalty = level > 20 and 1 or (1 - ((20 - level) * 0.0375))
+local function calculateGeneralAmount(spellLevel, baseAmount, spellPower, spModifier, healModifier)
+	-- Source for calculations: 
+	-- https://wowwiki-archive.fandom.com/wiki/Downranking
+	
+	-- Level 20 Penalty
+	local penalty = spellLevel > 20 and 1 or (1 - ((20 - spellLevel) * 0.0375))
+	
+	-- Downrank Penalty
 	if isWrath then
-		--https://wowwiki-archive.fandom.com/wiki/Downranking
-		penalty = min(1, max(0, (22 + (level + 5) - playerLevel) / 20))
+		penalty = min(1, max(0, (22 + (spellLevel + 5) - playerLevel)/20))
 	elseif isTBC then
 		-- TBC added another downrank penalty
-		penalty = penalty * min(1, (level + 11) / playerLevel)
+		penalty = penalty * min(1, (spellLevel + 11) / playerLevel)
 	end
+	
 	spellPower = spellPower * penalty
-
-	return healModifier * (amount + (spellPower * spModifier))
+	return healModifier * (baseAmount + (spellPower * spModifier))
 end
 
 local function DirectCoefficient(castTime)
@@ -2153,7 +2156,44 @@ if (isSoD and playerClass == "MAGE") then
 		end
 	end
 end
-
+if( playerClass == "WARRIOR") then
+	--- Warrior Diamond Flask support
+	LoadClassData = function()
+		local DiamondFlask = GetSpellInfo(363880)
+		local interval, duration = 5, 60
+		local ticks = duration / interval
+		-- Diamond Flask HoT benefits from spell power at 1:5 vs the the Normal 1:15
+		hotData[DiamondFlask] = {
+			coeff = duration / 5, 
+			interval = interval, 
+			levels = {50}, 
+			ticks = ticks,
+			averages = {108}
+		}
+		GetHealTargets = function (bitType, guid, spellID)
+				return compressGUID[playerGUID]
+		end
+		CalculateHotHealing = function(guid, spellID)
+			local spellName, spellRank = GetSpellInfo(spellID), 1 -- hardcode a rank of 1
+			-- Total healing of entire hot, should return 108
+			local totalBaseHeal = getBaseHealAmount(hotData, spellName, spellID, spellRank)
+			local bonusHealing = GetSpellBonusHealing()
+			-- bonus healing applies to each tick with diamond flask
+			-- calculateGeneralAmount uses the product of spellPowerMod and spellPower (bonus healing) in its calculation
+			-- so we'll just pass the totalTicks as the spellPowerMod to get the overall bonus healing added
+			local totalTicks = hotData[spellName].ticks
+			local spModifier = 1 -- any modifier to warriors '+healing'
+			local estTotalHeal = calculateGeneralAmount(
+				hotData[spellName].levels[spellRank], 
+				totalBaseHeal,
+				bonusHealing, 
+				spModifier,
+				playerHealModifier -- modifier to the warriors healing done.
+			)
+			return HOT_HEALS, ceil(estTotalHeal), totalTicks, hotData[spellName].interval
+		end
+	end
+end
 --[[
 -- While the groundwork is done, "CalculateHealing" needs to be theory crafted for classic / TBC / WotLK. Deactivating until someone steps up.
 if( playerClass == "WARLOCK" ) then
