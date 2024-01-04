@@ -919,7 +919,7 @@ end
 
 	CalculateHealing: Calculates the healing value, does all the formula calculations talent modifiers and such
 
-	CalculateHotHealing: Used specifically for calculating the heals of hots
+	CalculateHotHealing: Used specifically for calculating the heals of hots, returns amount per tick.
 
 	GetHealTargets: Who the heal is going to hit, used for setting extra targets for Beacon of Light + Paladin heal or Prayer of Healing.
 	The returns should either be:
@@ -2162,35 +2162,39 @@ if( playerClass == "WARRIOR") then
 		local DiamondFlask = GetSpellInfo(363880)
 		local interval, duration = 5, 60
 		local ticks = duration / interval
-		-- Diamond Flask HoT benefits from spell power at 1:5 vs the the Normal 1:15
+		-- Diamond Flask HoT benefits from spell power at 1:5 vs the the Normal 1:15 for hot spells
 		hotData[DiamondFlask] = {
-			coeff = duration / 5, 
+			coeff = duration / 5, -- 12 
 			interval = interval, 
 			levels = {50}, 
 			ticks = ticks,
-			averages = {108}
+			averages = {108} -- total HoT heal amt
 		}
 		GetHealTargets = function (bitType, guid, spellID)
 				return compressGUID[playerGUID]
 		end
 		CalculateHotHealing = function(guid, spellID)
-			local spellName, spellRank = GetSpellInfo(spellID), 1 -- hardcode a rank of 1
-			-- Total healing of entire hot, should return 108
-			local totalBaseHeal = getBaseHealAmount(hotData, spellName, spellID, spellRank)
-			local bonusHealing = GetSpellBonusHealing()
-			-- bonus healing applies to each tick with diamond flask
-			-- calculateGeneralAmount uses the product of spellPowerMod and spellPower (bonus healing) in its calculation
-			-- so we'll just pass the totalTicks as the spellPowerMod to get the overall bonus healing added
-			local totalTicks = hotData[spellName].ticks
-			local spModifier = 1 -- any modifier to warriors '+healing'
-			local estTotalHeal = calculateGeneralAmount(
-				hotData[spellName].levels[spellRank], 
-				totalBaseHeal,
-				bonusHealing, 
-				spModifier,
-				playerHealModifier -- modifier to the warriors healing done.
-			)
-			return HOT_HEALS, ceil(estTotalHeal), totalTicks, hotData[spellName].interval
+			local spellName, spellRank = GetSpellInfo(spellID), SpellIDToRank[spellID]
+			if spellName == DiamondFlask then
+				spellRank = 1 -- hardcode a rank of 1
+				local totalBaseHeal = getBaseHealAmount(hotData, spellName, spellID, spellRank)
+				local bonusHealing = GetSpellBonusHealing()
+
+				-- Note: Because bonus +healing applies to each tick with diamond flask and
+				-- `calculateGeneralAmount` uses the product of spModifier and bonusHealing,
+				-- we can just pass the coeff as spModifier to get the overall bonus healing added.
+
+				local totalTicks = hotData[spellName].ticks
+				local spModifier = hotData[spellName].coeff -- modifier to +healing, we'll use the coeff as the spModifier
+				local estTotalHeal = calculateGeneralAmount(
+					hotData[spellName].levels[spellRank], 
+					totalBaseHeal,
+					bonusHealing, 
+					spModifier,
+					playerHealModifier
+				)
+				return HOT_HEALS, ceil(estTotalHeal/totalTicks), totalTicks, hotData[spellName].interval
+			end
 		end
 	end
 end
@@ -2697,7 +2701,14 @@ local function findAura(casterGUID, spellID, ...)
 		end
 	end
 end
-
+---Parses a recently applied HoT, as picked up by the CLEU.
+---@param casterGUID string
+---@param wasUpdated boolean Whether or not this is an update to an existing hot
+---@param spellID number
+---@param tickAmount number|table|string?
+---@param totalTicks integer?
+---@param tickInterval integer?
+---@param ... string compressed target GUIDs
 local function parseHotHeal(casterGUID, wasUpdated, spellID, tickAmount, totalTicks, tickInterval, ...)
 	local spellName = GetSpellInfo(spellID)
 	-- If the user is on 3.3, then anything without a total ticks attached to it is rejected
@@ -3028,14 +3039,14 @@ function HealComm:COMBAT_LOG_EVENT_UNFILTERED(...)
 			end
 		end
 
-		-- New hot was applied
+	-- New hot was applied
 	elseif ((eventType == "SPELL_AURA_APPLIED" or eventType == "SPELL_AURA_REFRESH" or eventType == "SPELL_AURA_APPLIED_DOSE") and bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) == COMBATLOG_OBJECT_AFFILIATION_MINE) then
 		if (hotData[spellName]) then
 			-- Single target so we can just send it off now thankfully
 			local bitType, amount, totalTicks, tickInterval, bombAmount, hasVariableTicks = CalculateHotHealing(destGUID,
 				spellID)
 			if (bitType) then
-				local targets = GetHealTargets(type, destGUID, spellID) -- should be bitType?
+				local targets = GetHealTargets(bitType, destGUID, spellID) -- should be bitType?
 				if targets then
 					parseHotHeal(sourceGUID, false, spellID, amount, totalTicks, tickInterval, strsplit(",", targets))
 
