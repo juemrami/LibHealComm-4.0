@@ -937,35 +937,35 @@ end
 local CalculateHealing, GetHealTargets, AuraHandler, CalculateHotHealing, ResetChargeData, LoadClassData
 
 --- Caculate the base healing value of a spell and rank. Base healing is usually the number in the tooltip.
----@param spellData table<string, directSpellData|hotSpellData> Table of healing spell data to check against for spell avgs and spell level.
+---@param playerSpells table<string, directSpellData|hotSpellData> 
 ---@param spellName string Name of the spell (HoT or DH)
----@param spellID number ID of the spell
----@param spellRank any Rank of the spell
+---@param spellID integer ID of the spell
+---@param spellRank integer Rank of the spell
 ---@return number
-local function getBaseHealAmount(spellData, spellName, spellID, spellRank)
-	-- local data = spellData[spellName]
-	if spellID == 37563 then
-		---@diagnostic disable-next-line: cast-local-type
-		spellData = spellData["37563"]
-		-- data = spellData["37563"]
-	else
-		---@type table<string, directSpellData|hotSpellData>
-		---@diagnostic disable-next-line: assign-type-mismatch
-		spellData = spellData[spellName]
+local function getBaseHealAmount(playerSpells, spellName, spellID, spellRank)
+	local spellData = playerSpells[spellName]
+	if spellID == 37563 then -- T4 bonus shares "Renwal" name.
+		spellData = playerSpells["37563"]
 	end
-	-- then use data instead
+	
 	local average = spellData.averages[spellRank]
 	if type(average) == "number" then
 		return average
 	end
 	--SOD runes have no spell level and are treated as playerLevel
-	local requiresLevel = spellData.levels[spellRank] or isSoD and 1
-	---@diagnostic disable-next-line: return-type-mismatch, need-check-nil
-	return average[min(playerLevel - requiresLevel + 1, #average)]
+	local spellLevel = spellData.levels[spellRank] or isSoD and 1
+	return average[min(playerLevel - spellLevel + 1, #average)]
 end
 
---Values for SOD have been taken from https://github.com/jezzi23/stat_weights_classic
+---Generates an avg spell effect value for lvls [1-60].
+---Scaling values for SOD spells have been taken from https://github.com/jezzi23/stat_weights_classic.
+---@param baseAmount number
+---@param levelCoeff number
+---@param levelScaling number
+---@param levelScalingSquared number
+---@return number[][]
 local function generateSODAverages(baseAmount, levelCoeff, levelScaling, levelScalingSquared)
+	---@type number[]
 	local averages = {}
 	for lvl = 1, 60 do
 		averages[lvl] = levelCoeff * (baseAmount + levelScaling * lvl + levelScalingSquared * lvl * lvl)
@@ -1250,8 +1250,10 @@ if (playerClass == "DRUID") then
 				end
 			end
 
-			healAmount = calculateGeneralAmount(hotData[spellName].levels[spellRank], healAmount, spellPower, spModifier,
-				healModifier)
+			healAmount = calculateGeneralAmount(
+				hotData[spellName].levels[spellRank] or playerLevel, -- SOD runes have no spell level and scale w/ playerLevel
+				healAmount, spellPower, spModifier,healModifier
+			)
 			return HOT_HEALS, ceil(max(0, healAmount)), totalTicks, hotData[spellName].interval, bombAmount
 		end
 
@@ -1644,7 +1646,10 @@ if (playerClass == "PRIEST") then
 			{avg(1952, 2508), avg(1955, 2512), avg(1959, 2516)} }}
 
 		if isSoD then
-			spellData[Penance] = {_isChanneled = true, coeff = 0.857, ticks = 3, levels = {nil}, averages = generateSODAverages(38.258376, 1.06, 0.904195, 0.161311)}
+			spellData[Penance] = {
+				_isChanneled = true, coeff = 0.857, ticks = 3, levels = { nil }, 
+				averages = generateSODAverages(38.258376, 1.06, 0.904195, 0.161311)
+			}
 		else
 			spellData[Penance] = {_isChanneled = true, coeff = 0.857, ticks = 3, levels = {60, 70, 75, 80}, averages = {avg(670, 756), avg(805, 909), avg(1278, 1442), avg(1484, 1676)}}
 		end
@@ -1826,6 +1831,9 @@ if (playerClass == "PRIEST") then
 
 			healAmount = calculateGeneralAmount(spellData[spellName].levels[spellRank], healAmount, spellPower,
 				spModifier, healModifier)
+			healAmount = calculateGeneralAmount(
+				spellData[spellName].levels[spellRank] or playerLevel, -- use playerLevel for SoD
+				healAmount, spellPower, spModifier, healModifier)
 
 			-- Player has over a 100% chance to crit with Holy spells
 			if (GetSpellCritChance(2) >= 100) then
@@ -1971,7 +1979,10 @@ if (playerClass == "SHAMAN") then
 			healAmount = healAmount / hotData[spellName].ticks
 
 			healAmount = calculateGeneralAmount(hotData[spellName].levels[spellRank], healAmount, spellPower, spModifier,
-				healModifier)
+			healAmount = calculateGeneralAmount(
+				hotData[spellName].levels[spellRank] or playerLevel, -- SoD uses playerLevel
+				healAmount, spellPower, spModifier, healModifier
+			)
 
 			if (isSoD and spellName == HealingRain) then
 				--HoT duration is equal to remaining duration of aura
@@ -2145,8 +2156,10 @@ if (isSoD and playerClass == "MAGE") then
 			spellPower = spellPower * spellData[spellName].coeff
 			spellPower = spellPower / spellData[spellName].ticks
 
-			healAmount = calculateGeneralAmount(spellData[spellName].levels[spellRank], healAmount, spellPower,
-				spModifier, healModifier)
+			healAmount = calculateGeneralAmount(
+				spellData[spellName].levels[spellRank] or playerLevel, 
+				healAmount, spellPower, spModifier, healModifier
+			)
 
 			if (spellName == MassRegeneration or spellName == Regeneration) then
 				return CHANNEL_HEALS, math.ceil(healAmount), spellData[spellName].ticks, spellData[spellName].interval
@@ -3006,7 +3019,9 @@ function HealComm:COMBAT_LOG_EVENT_UNFILTERED(...)
 
 	if not destUnit then return end -- We only handle own group units
 
-	local spellID = destUnit and select(10, unitHasAura(destUnit, spellName)) or select(7, GetSpellInfo(spellName))
+	---@type number
+	local spellID = destUnit and select(10, unitHasAura(destUnit, spellName)) 
+						or select(7, GetSpellInfo(spellName --[[@as string]]))
 
 	-- Heal or hot ticked that the library is tracking
 	-- It's more efficient/accurate to have the library keep track of this locally, spamming the comm channel would not be a very good thing especially when a single player can have 4 - 8 hots/channels going on them.
