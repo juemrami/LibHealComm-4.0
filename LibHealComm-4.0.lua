@@ -1194,8 +1194,8 @@ if (playerClass == "DRUID") then
 					if type(bombBase) == "table" then
 						bombBase = bombBase[min(playerLevel, #bombBase)]
 					end
-					bombAmount = ceil(calculateGeneralAmount(hotData[spellName].levels[spellRank], bombBase, bombSpell,
-						spModifier, healModifier))
+					--- use playerLevel for SoD instead of `data[spellName].levels[spellRank] == nil`
+					bombAmount = ceil(calculateGeneralAmount(playerLevel, bombBase, bombSpell, spModifier, healModifier))
 				else
 					bombAmount = ceil(calculateGeneralAmount(hotData[spellName].levels[spellRank],
 						hotData[spellName].bomb[spellRank], bombSpell, spModifier, healModifier))
@@ -1829,8 +1829,6 @@ if (playerClass == "PRIEST") then
 			healModifier = healModifier * (1 + talentData[FocusedPower].current)
 			healModifier = healModifier * (1 + talentData[BlessedResilience].current)
 
-			healAmount = calculateGeneralAmount(spellData[spellName].levels[spellRank], healAmount, spellPower,
-				spModifier, healModifier)
 			healAmount = calculateGeneralAmount(
 				spellData[spellName].levels[spellRank] or playerLevel, -- use playerLevel for SoD
 				healAmount, spellPower, spModifier, healModifier)
@@ -1978,7 +1976,6 @@ if (playerClass == "SHAMAN") then
 			spellPower = spellPower / hotData[spellName].ticks
 			healAmount = healAmount / hotData[spellName].ticks
 
-			healAmount = calculateGeneralAmount(hotData[spellName].levels[spellRank], healAmount, spellPower, spModifier,
 			healAmount = calculateGeneralAmount(
 				hotData[spellName].levels[spellRank] or playerLevel, -- SoD uses playerLevel
 				healAmount, spellPower, spModifier, healModifier
