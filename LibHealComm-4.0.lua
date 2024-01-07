@@ -148,21 +148,21 @@ HealComm.guidToGroup = HealComm.guidToGroup or {}
 HealComm.guidToUnit = HealComm.guidToUnit or {}
 HealComm.itemSetsData = HealComm.itemSetsData or {}
 
----Every fith index starting at `1` (ie 1, 6, 11, 16, etc) contains the guid of the pending heal target followed by the amount, stack, endTime, and ticksLeft for each index after the guid.
----@alias PendingHealData { bitType: integer, spellID: integer, endTime: number, hasVariableTicks: boolean, totalTicks: integer, tickInterval: number, [integer]: string|number|number[]}
+---Every fith index starting at `1` (ie 1, 6, 11, 16, etc) contains the guid of the pending heal target followed by the amount, stack, endTime, and ticksLeft for each index after the guid. Additionally, indexing by the a units GUID will return its associated index.
+---@alias PendingHealData { bitType: integer, spellID: integer, endTime: number, hasVariableTicks: boolean, totalTicks: integer, tickInterval: number, [integer]: string|number|number[], [string]: integer }
 ---@type table<string, PendingHealData[]> # maps a casterGUID to a list of pending heals for the caster
 HealComm.pendingHeals = HealComm.pendingHeals or {}
 
 HealComm.pendingHots = HealComm.pendingHots or {}
 
----@alias directSpellData { interval: number, ticks: number, coeff: number, levels?: number[], averages?: number[]|number[][], bomb?: number[] }
+---@alias DirectSpellData { _isChanneled: boolean?, interval: number, ticks: number|number[], coeff: number, levels?: number[], averages?: number[]|number[][], bomb?: number[] }
 --- Map of a spellName to it's gathered **direct healing** data/spellinfo. Contains spell data for current players class.
----@type table<string, directSpellData>
+---@type table<string, DirectSpellData>
 HealComm.spellData = HealComm.spellData or {}
 
----@alias hotSpellData { interval: number, ticks: number, coeff: number, levels: number[], averages: number[], bomb?: number[], dhCoeff?: number}
+---@alias HotSpellData { interval: number, ticks: number, coeff: number, levels: number[], averages: number[], bomb?: number[], dhCoeff?: number}
 --- Like the spellData table, but for the **healing over time** data of a spell.
----@type table<string, hotSpellData>
+---@type table<string, HotSpellData>
 HealComm.hotData = HealComm.hotData or {}
 
 HealComm.talentData = HealComm.talentData or {}
@@ -340,7 +340,8 @@ local function removeRecordList(pending, inc, comp, ...)
 	end
 end
 
--- Removes every mention to the given GUID
+---Removes every mention to the given GUID
+---@param guid string
 local function removeAllRecords(guid)
 	local changed
 
@@ -349,6 +350,7 @@ local function removeAllRecords(guid)
 			for _, pending in pairs(spells) do
 				if (pending.bitType and pending[guid]) then
 					local id = pending[guid]
+					---@cast id integer
 
 					-- ticksLeft, endTime, stack, amount, guid
 					tremove(pending, id + 4)
@@ -481,6 +483,7 @@ function HealComm:GetTimeframeHealAmount(guid, bitFlag, startTime, time, ignoreG
 									-- Channeled heals and hots, have to figure out how many times it'll tick within the given time band
 								elseif ((pending.bitType == CHANNEL_HEALS or pending.bitType == HOT_HEALS)) then
 									local ticksLeft = pending[i + 4]
+									---@cast ticksLeft number
 									local secondsLeft = endTime - currentTime
 									local bandSeconds = time - currentTime
 									local ticks = floor(min(bandSeconds, secondsLeft) / pending.tickInterval)
@@ -937,7 +940,7 @@ end
 local CalculateHealing, GetHealTargets, AuraHandler, CalculateHotHealing, ResetChargeData, LoadClassData
 
 --- Caculate the base healing value of a spell and rank. Base healing is usually the number in the tooltip.
----@param playerSpells table<string, directSpellData|hotSpellData> 
+---@param playerSpells table<string, DirectSpellData|HotSpellData> 
 ---@param spellName string Name of the spell (HoT or DH)
 ---@param spellID integer ID of the spell
 ---@param spellRank integer Rank of the spell
@@ -2424,7 +2427,7 @@ end
 
 local alreadyAdded = {}
 function HealComm:UNIT_AURA(unit)
-	local guid = UnitGUID(unit)
+	local guid = UnitGUID(unit) --[[@as string]] --garunteed to be defined?
 	if (not guidToUnit[guid]) then return end
 	local increase, decrease, playerIncrease, playerDecrease = 1, 1, 1, 1
 
@@ -2557,7 +2560,7 @@ function HealComm:CHARACTER_POINTS_CHANGED()
 end
 
 -- Save the currently equipped range weapon
-local RANGED_SLOT = GetInventorySlotInfo("RangedSlot")
+local RANGED_SLOT = GetInventorySlotInfo("RANGEDSLOT")
 function HealComm:PLAYER_EQUIPMENT_CHANGED()
 	-- Caches set bonus info, as you can't reequip set bonus gear in combat no sense in checking it
 	if (not InCombatLockdown()) then
@@ -3010,15 +3013,14 @@ local eventRegistered = {
 function HealComm:COMBAT_LOG_EVENT_UNFILTERED(...)
 	local timestamp, eventType, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, destGUID, destName, destFlags, destRaidFlags = ...
 	if (not eventRegistered[eventType]) then return end
-
-	local _, spellName = select(12, ...)
+	---@type string # Garunteed to be defined (I think)
+	local spellName = select(13, ...)
 	local destUnit = guidToUnit[destGUID]
 
 	if not destUnit then return end -- We only handle own group units
 
 	---@type number
-	local spellID = destUnit and select(10, unitHasAura(destUnit, spellName)) 
-						or select(7, GetSpellInfo(spellName --[[@as string]]))
+	local spellID = destUnit and select(10, unitHasAura(destUnit, spellName)) or select(7, GetSpellInfo(spellName))
 
 	-- Heal or hot ticked that the library is tracking
 	-- It's more efficient/accurate to have the library keep track of this locally, spamming the comm channel would not be a very good thing especially when a single player can have 4 - 8 hots/channels going on them.
@@ -3183,11 +3185,12 @@ function HealComm:UNIT_SPELLCAST_SENT(unit, targetName, castGUID, spellID)
 			-- If the player is ungrouped and healing, you can't take advantage of the name -> "unit" map, look in the UnitIDs that would most likely contain the information that's needed.
 			local guid = UnitGUID(targetName)
 			if (not guid) then
-				guid = UnitName("target") == castTarget and UnitGUID("target") or
-				UnitName("focus") == castTarget and UnitGUID("focus") or
-				UnitName("mouseover") == castTarget and UnitGUID("mouseover") or
-				UnitName("targettarget") == castTarget and UnitGUID("target") or
-				UnitName("focustarget") == castTarget and UnitGUID("focustarget")
+				guid = (UnitName("target") == castTarget and UnitGUID("target")) 
+				or (UnitName("focus") == castTarget and UnitGUID("focus")) 
+				or (UnitName("mouseover") == castTarget and UnitGUID("mouseover")) 
+				or (UnitName("targettarget") == castTarget and UnitGUID("target"))
+				or (UnitName("focustarget") == castTarget and UnitGUID("focustarget"))
+				or nil
 			end
 
 			guidPriorities[lastSentID] = nil
@@ -3475,6 +3478,7 @@ end
 -- 5s poll that tries to solve the problem of X running out of range while a HoT is ticking
 -- this is not really perfect far from it in fact. If I can find a better solution I will switch to that.
 if (not HealComm.hotMonitor) then
+	---@class HotMonitor : Frame
 	HealComm.hotMonitor = CreateFrame("Frame")
 	HealComm.hotMonitor:Hide()
 	HealComm.hotMonitor.timeElapsed = 0
@@ -3530,7 +3534,7 @@ end
 
 -- Keeps track of pet GUIDs, as pets are considered vehicles this will also map vehicle GUIDs to unit
 function HealComm:UNIT_PET(unit)
-	local guid = UnitGUID(unit)
+	local guid = UnitGUID(unit) --[[@as string]]
 	unit = guidToUnit[guid]
 
 	if not unit then return end
@@ -3729,8 +3733,8 @@ function HealComm:OnInitialize()
 	hooksecurefunc("SpellTargetUnit", function(...) HealComm:SpellTargetUnit(...) end)
 	hooksecurefunc("AssistUnit", function(...) HealComm:AssistUnit(...) end)
 	hooksecurefunc("UseAction", function(...) HealComm:UseAction(...) end)
-	hooksecurefunc("TargetLastFriend", function(...) HealComm:TargetLastFriend(...) end)
-	hooksecurefunc("TargetLastTarget", function(...) HealComm:TargetLastTarget(...) end)
+	hooksecurefunc("TargetLastFriend", function(...) HealComm:TargetLastFriend() end)
+	hooksecurefunc("TargetLastTarget", function(...) HealComm:TargetLastTarget() end)
 	hooksecurefunc("CastSpellByName", function(...) HealComm:CastSpellByName(...) end)
 	hooksecurefunc("CastSpellByID", function(...) HealComm:CastSpellByID(...) end)
 end
@@ -3754,9 +3758,9 @@ HealComm.frame = nil
 -- At PLAYER_LEAVING_WORLD (Actually more like MIRROR_TIMER_STOP but anyway) UnitGUID("player") returns nil, delay registering
 -- events and set a playerGUID/playerName combo for all players on PLAYER_LOGIN not just the healers.
 function HealComm:PLAYER_LOGIN()
-	playerGUID = UnitGUID("player")
-	playerName = UnitName("player")
-	playerLevel = UnitLevel("player")
+	playerGUID = UnitGUID("player") --[[@as string]]
+	playerName = UnitName("player") --[[@as string]]
+	playerLevel = UnitLevel("player") --[[@as integer]]
 
 	-- Oddly enough player GUID is not available on file load, so keep the map of player GUID to themselves too
 	guidToUnit[playerGUID] = "player"
